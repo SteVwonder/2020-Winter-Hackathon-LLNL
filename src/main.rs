@@ -1,10 +1,10 @@
+use std::collections::{HashMap, HashSet};
 use std::iter::FromIterator;
-use std::collections::{HashMap,HashSet};
 
 struct Job {
     jobid: i64,
     ancestors: HashSet<i64>, // jobs this job depends on
-    children: HashSet<i64>, // jobs that depend on this job
+    children: HashSet<i64>,  // jobs that depend on this job
 }
 
 impl Job {
@@ -30,20 +30,26 @@ impl State {
         }
     }
 
-    pub fn add_in_dependency(&mut self, in_job: &mut Job, symbol: &String) -> Result<(), &'static str> {
+    pub fn add_in_dependency(
+        &mut self,
+        in_job: &mut Job,
+        symbol: &String,
+    ) -> Result<(), &'static str> {
         match self.jobs_with_out_symbol.get(symbol) {
             Some(out_jobs) => {
                 for out_jobid in out_jobs.iter() {
                     let out_job: &mut Job = match self.jobs.get_mut(out_jobid) {
                         Some(x) => x,
-                        None => return Err("Matching out jobid found in symbol map but not job map")
+                        None => {
+                            return Err("Matching out jobid found in symbol map but not job map")
+                        }
                     };
                     in_job.ancestors.insert(out_job.jobid);
                     out_job.children.insert(in_job.jobid);
-                };
+                }
                 Ok(())
-            },
-            None => {Ok(())},
+            }
+            None => Ok(()),
         }
     }
 
@@ -51,16 +57,15 @@ impl State {
         match self.jobs_with_out_symbol.get_mut(symbol) {
             Some(out_jobs) => {
                 out_jobs.insert(out_job.jobid);
-            },
+            }
             None => {
-                self.jobs_with_out_symbol.insert(symbol.clone(), vec![out_job.jobid].into_iter().collect());
-            },
+                self.jobs_with_out_symbol
+                    .insert(symbol.clone(), vec![out_job.jobid].into_iter().collect());
+            }
         };
     }
 
-    pub fn rollback_job_add(&mut self, job: &Job) {
-
-    }
+    pub fn rollback_job_add(&mut self, job: &Job) {}
 
     pub fn add_job(&mut self, jobid: i64, dependencies: &Vec<Dependency>) {
         if dependencies.len() == 0 {
@@ -71,18 +76,16 @@ impl State {
 
         for dependency in dependencies.iter() {
             let result = match dependency.dep_type {
-                DependencyType::In => {
-                    self.add_in_dependency(&mut job, &dependency.label)
-                },
+                DependencyType::In => self.add_in_dependency(&mut job, &dependency.label),
                 DependencyType::Out => {
                     self.add_out_dependency(&mut job, &dependency.label);
                     Ok(())
-                },
+                }
                 DependencyType::InOut => {
                     let ret = self.add_in_dependency(&mut job, &dependency.label);
                     self.add_out_dependency(&mut job, &dependency.label);
                     ret
-                },
+                }
             };
             match result {
                 Ok(()) => (),
@@ -93,10 +96,7 @@ impl State {
             }
         }
 
-        self.jobs.insert(
-            jobid,
-            job
-        );
+        self.jobs.insert(jobid, job);
     }
 
     pub fn job_event(&mut self, jobid: i64, event: String) -> Result<HashSet<i64>, &'static str> {
@@ -110,7 +110,7 @@ impl State {
                 if job.ancestors.len() == 0 {
                     ret.insert(jobid);
                 }
-            },
+            }
             "finish" => {
                 for child_id in job.children.clone().iter() {
                     let child_job = match self.jobs.get_mut(child_id) {
@@ -123,8 +123,8 @@ impl State {
                         ret.insert(child_job.jobid);
                     }
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
         Ok(ret)
     }
@@ -150,8 +150,6 @@ impl Dependency {
     }
 }
 
-
-
 fn main() {
     println!("Hello, world!");
 }
@@ -167,16 +165,28 @@ mod tests {
 
     fn assert_jobs_eq(actual: Result<HashSet<i64>, &'static str>, expected: &Vec<i64>) {
         assert!(actual.is_ok());
-        assert_eq!(actual.unwrap(), HashSet::from_iter(expected.iter().cloned()));
+        assert_eq!(
+            actual.unwrap(),
+            HashSet::from_iter(expected.iter().cloned())
+        );
     }
 
     #[test]
     fn job_chain() {
         let mut state = State::new();
 
-        state.add_job(1, &vec![Dependency::new(DependencyType::Out, "foo".to_string())]);
-        state.add_job(2, &vec![Dependency::new(DependencyType::InOut, "foo".to_string())]);
-        state.add_job(3, &vec![Dependency::new(DependencyType::In, "foo".to_string())]);
+        state.add_job(
+            1,
+            &vec![Dependency::new(DependencyType::Out, "foo".to_string())],
+        );
+        state.add_job(
+            2,
+            &vec![Dependency::new(DependencyType::InOut, "foo".to_string())],
+        );
+        state.add_job(
+            3,
+            &vec![Dependency::new(DependencyType::In, "foo".to_string())],
+        );
 
         // Submit all the things!
         let out = state.job_event(1, "submit".to_string());
@@ -203,11 +213,23 @@ mod tests {
     #[test]
     fn job_fan_out() {
         let mut state = State::new();
-        state.add_job(1, &vec![Dependency::new(DependencyType::Out, "foo".to_string())]);
+        state.add_job(
+            1,
+            &vec![Dependency::new(DependencyType::Out, "foo".to_string())],
+        );
         for jobid in vec![2, 3, 4].iter() {
-            state.add_job(*jobid, &vec![Dependency::new(DependencyType::In, "foo".to_string()), Dependency::new(DependencyType::Out, "bar".to_string())]);
+            state.add_job(
+                *jobid,
+                &vec![
+                    Dependency::new(DependencyType::In, "foo".to_string()),
+                    Dependency::new(DependencyType::Out, "bar".to_string()),
+                ],
+            );
         }
-        state.add_job(5, &vec![Dependency::new(DependencyType::In, "bar".to_string())]);
+        state.add_job(
+            5,
+            &vec![Dependency::new(DependencyType::In, "bar".to_string())],
+        );
 
         // Submit all the things!
         let out = state.job_event(1, "submit".to_string());
@@ -253,9 +275,11 @@ mod tests {
         // A job with an 'in' dependency that does not match an 'out' of a
         // currently queued/running job can be immediately scheduled.
         let mut state = State::new();
-        state.add_job(1, &vec![Dependency::new(DependencyType::In, "foo".to_string())]);
+        state.add_job(
+            1,
+            &vec![Dependency::new(DependencyType::In, "foo".to_string())],
+        );
         let out = state.job_event(1, "submit".to_string());
         assert_jobs_eq(out, &vec![1]);
     }
-
 }
