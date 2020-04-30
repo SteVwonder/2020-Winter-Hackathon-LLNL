@@ -19,6 +19,9 @@ impl Job {
 
 struct State {
     jobs: HashMap<i64, Job>,
+    /// Out symbol lookup table used when a new job with an `in` dependency is
+    /// ingested.  We can look for that dependency in this table and find all
+    /// relevant jobs to add as ancestors of the new job.
     jobs_with_out_symbol: HashMap<String, HashSet<i64>>,
 }
 
@@ -34,7 +37,14 @@ impl State {
         &mut self,
         in_job: &mut Job,
         symbol: &String,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), StateError> {
+        /*! Look for previously submitted jobs whose `out` symbol matches the
+         * `in` symbol of the provided job.  For each matching job: add the new
+         * job as a child of the previously submitted job and add the previously
+         * submitted job as an ancestor of the new job.  If no matches are
+         * found, do nothing (i.e., the job should be free to be scheduled
+         * immediately)
+         */
         match self.jobs_with_out_symbol.get(symbol) {
             Some(out_jobs) => {
                 for out_jobid in out_jobs.iter() {
@@ -54,6 +64,8 @@ impl State {
     }
 
     pub fn add_out_dependency(&mut self, out_job: &Job, symbol: &String) {
+        //! Add the new job to the appropriate key in the `jobs_out_symbol`
+        //! lookup table, where the "appropriate key" is the `out` symbol.
         match self.jobs_with_out_symbol.get_mut(symbol) {
             Some(out_jobs) => {
                 out_jobs.insert(out_job.jobid);
@@ -68,6 +80,11 @@ impl State {
     pub fn rollback_job_add(&mut self, job: &Job) {}
 
     pub fn add_job(&mut self, jobid: i64, dependencies: &Vec<Dependency>) {
+        /*! Add a new job into the dependency graph, considering all of its
+         * dependencies.  For each dependency of the new job, InOut
+         * dependencies are broken down into an `In` insertion followed by an
+         * an `Out` insertion.
+         */
         if dependencies.len() == 0 {
             return;
         }
@@ -100,6 +117,11 @@ impl State {
     }
 
     pub fn job_event(&mut self, jobid: i64, event: String) -> Result<HashSet<i64>, &'static str> {
+        /*! Given a specific job and it's event, calculate the effects of this
+         * event on other jobs.  Specifically, calculate which jobs are now
+         * free to run. For example, if a job completes, determine which jobs
+         * are now free to run given the completion of their dependency.
+         */
         let job = match self.jobs.get(&jobid) {
             Some(x) => x,
             None => return Err("Job ID in event not found"),
@@ -272,8 +294,8 @@ mod tests {
 
     #[test]
     fn nonexistent_in() {
-        // A job with an 'in' dependency that does not match an 'out' of a
-        // currently queued/running job can be immediately scheduled.
+        //! A job with an 'in' dependency that does not match an 'out' of a
+        //! currently queued/running job can be immediately scheduled.
         let mut state = State::new();
         state.add_job(
             1,
