@@ -3,14 +3,16 @@ use std::iter::FromIterator;
 
 struct Job {
     jobid: i64,
+    user: u32,
     ancestors: HashSet<i64>,   // jobs this job depends on
     descendants: HashSet<i64>, // jobs that depend on this job
 }
 
 impl Job {
-    pub fn new(jobid: i64) -> Self {
+    pub fn new(jobid: i64, user: u32) -> Self {
         Self {
             jobid: jobid,
+            user: user,
             ancestors: HashSet::new(),
             descendants: HashSet::new(),
         }
@@ -22,28 +24,35 @@ enum StateError {
     InvalidJobID,
     MissingDescendant,
     InvalidEvent,
+    InvalidPermission,
 }
 
+type SymbolMap = HashMap<String, HashSet<i64>>;
+
 struct State {
+    instance_owner: u32,
     jobs: HashMap<i64, Job>,
-    /// Out symbol lookup table used when a new job with an `in` dependency is
-    /// ingested.  We can look for that dependency in this table and find all
+    /// Global symbol lookup table used when a new job with an `in` dependency
+    /// is ingested.  We can look for that dependency in this table and find all
     /// relevant jobs to add as ancestors of the new job.
-    jobs_with_out_symbol: HashMap<String, HashSet<i64>>,
+    global_symbol_map: SymbolMap,
+    user_symbol_map: HashMap<u32, SymbolMap>,
 }
 
 impl State {
-    pub fn new() -> Self {
+    pub fn new(instance_owner: u32) -> Self {
         Self {
+            instance_owner: instance_owner,
             jobs: HashMap::new(),
-            jobs_with_out_symbol: HashMap::new(),
+            global_symbol_map: HashMap::new(),
+            user_symbol_map: HashMap::new(),
         }
     }
 
     pub fn add_in_dependency(
         &mut self,
         in_job: &mut Job,
-        symbol: &String,
+        dependency: &Dependency,
     ) -> Result<(), StateError> {
         /*! Look for previously submitted jobs whose `out` symbol matches the
          * `in` symbol of the provided job.  For each matching job: add the new
@@ -52,69 +61,88 @@ impl State {
          * matches are found, do nothing (i.e., the job should be free to be
          * scheduled immediately)
          */
-        match self.jobs_with_out_symbol.get(symbol) {
+        let symbol = &dependency.value;
+        let out_jobs = match self.get_symbol_map(in_job.user, dependency).get(symbol) {
             Some(out_jobs) => {
-                for out_jobid in out_jobs.iter() {
-                    let out_job: &mut Job = match self.jobs.get_mut(out_jobid) {
-                        Some(x) => x,
-                        None => return Err(StateError::InvalidJobID),
-                    };
-                    in_job.ancestors.insert(out_job.jobid);
-                    out_job.descendants.insert(in_job.jobid);
-                }
-                Ok(())
+                out_jobs.clone() // satisfy the borrow-checker, release the &mut to self
             }
-            None => Ok(()),
+            None => return Ok(()),
+        };
+        for out_jobid in out_jobs.iter() {
+            let out_job: &mut Job = match self.jobs.get_mut(out_jobid) {
+                Some(x) => x,
+                None => return Err(StateError::InvalidJobID),
+            };
+            in_job.ancestors.insert(out_job.jobid);
+            out_job.descendants.insert(in_job.jobid);
         }
+        Ok(())
     }
 
-    pub fn add_out_dependency(&mut self, out_job: &Job, symbol: &String) {
+    pub fn add_out_dependency(
+        &mut self,
+        out_job: &Job,
+        dependency: &Dependency,
+    ) -> Result<(), StateError> {
         //! Add the new job to the appropriate key in the `jobs_out_symbol`
         //! lookup table, where the "appropriate key" is the `out` symbol.
-        match self.jobs_with_out_symbol.get_mut(symbol) {
-            Some(out_jobs) => {
-                out_jobs.insert(out_job.jobid);
-            }
-            None => {
-                self.jobs_with_out_symbol
-                    .insert(symbol.clone(), vec![out_job.jobid].into_iter().collect());
-            }
+        if (dependency.scope == DependencyScope::Global) && (out_job.user != self.instance_owner) {
+            return Err(StateError::InvalidPermission);
+        }
+
+        let symbol_map = self.get_symbol_map(out_job.user, dependency);
+        let symbol = &dependency.value;
+        let out_jobs = symbol_map
+            .entry(symbol.to_string())
+            .or_insert(HashSet::new());
+        out_jobs.insert(out_job.jobid);
+
+        Ok(())
+    }
+
+    pub fn rollback_job_add(&mut self, _job: &Job) {}
+
+    fn get_symbol_map(&mut self, user: u32, dependency: &Dependency) -> &mut SymbolMap {
+        return match dependency.scope {
+            DependencyScope::Global => &mut self.global_symbol_map,
+            DependencyScope::User => self.user_symbol_map.entry(user).or_insert(HashMap::new()),
         };
     }
 
-    pub fn rollback_job_add(&mut self, job: &Job) {}
-
-    pub fn add_job(&mut self, jobid: i64, dependencies: &Vec<Dependency>) {
+    pub fn add_job(
+        &mut self,
+        mut job: Job,
+        dependencies: &Vec<Dependency>,
+    ) -> Result<(), StateError> {
         /*! Add a new job into the dependency graph, considering all of its
          * dependencies.  For each dependency of the new job, InOut
          * dependencies are broken down into an `In` insertion followed by an
          * an `Out` insertion.
          */
-        let mut job = Job::new(jobid);
-
         for dependency in dependencies.iter() {
             let result = match dependency.dep_type {
-                DependencyType::In => self.add_in_dependency(&mut job, &dependency.value),
-                DependencyType::Out => {
-                    self.add_out_dependency(&mut job, &dependency.value);
-                    Ok(())
-                }
+                DependencyType::In => self.add_in_dependency(&mut job, &dependency),
+                DependencyType::Out => self.add_out_dependency(&mut job, &dependency),
                 DependencyType::InOut => {
-                    let ret = self.add_in_dependency(&mut job, &dependency.value);
-                    self.add_out_dependency(&mut job, &dependency.value);
-                    ret
+                    let in_ret = self.add_in_dependency(&mut job, &dependency);
+                    if in_ret.is_err() {
+                        in_ret
+                    } else {
+                        self.add_out_dependency(&mut job, &dependency)
+                    }
                 }
             };
             match result {
-                Ok(()) => (),
+                Ok(()) => {}
                 Err(e) => {
-                    eprintln!("Failed to add dependency for job: {:?}", e);
                     self.rollback_job_add(&job);
+                    return Err(e);
                 }
             }
         }
 
-        self.jobs.insert(jobid, job);
+        self.jobs.insert(job.jobid, job);
+        Ok(())
     }
 
     pub fn job_event(&mut self, jobid: i64, event: String) -> Result<HashSet<i64>, StateError> {
@@ -165,22 +193,26 @@ impl State {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 enum DependencyType {
     In,
     Out,
     InOut,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 enum DependencyScope {
     User,
     Global,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 enum DependencyScheme {
     String,
     Fluid,
 }
 
+#[derive(Debug, PartialEq)]
 struct Dependency {
     dep_type: DependencyType,
     scope: DependencyScope,
@@ -189,7 +221,21 @@ struct Dependency {
 }
 
 impl Dependency {
-    pub fn new(dep_type: DependencyType, value: String) -> Self {
+    pub fn new(
+        dep_type: DependencyType,
+        scope: DependencyScope,
+        scheme: DependencyScheme,
+        value: String,
+    ) -> Self {
+        Self {
+            dep_type: dep_type,
+            scope: scope,
+            scheme: scheme,
+            value: value,
+        }
+    }
+
+    pub fn new_global_string(dep_type: DependencyType, value: String) -> Self {
         Self {
             dep_type: dep_type,
             scope: DependencyScope::Global,
@@ -220,71 +266,107 @@ mod tests {
         );
     }
 
-    fn assert_err_eq(actual: Result<HashSet<i64>, StateError>, expected: StateError) {
+    fn assert_err_eq<T: std::fmt::Debug>(actual: Result<T, StateError>, expected: StateError) {
         // replace with `contains_err` once it is stable
         assert!(actual.is_err());
         assert_eq!(actual.unwrap_err(), expected,);
     }
 
     #[test]
-    fn job_chain() {
-        let mut state = State::new();
+    fn owner_job_chain() {
+        let scheme = DependencyScheme::String;
+        for scope in vec![DependencyScope::Global, DependencyScope::User] {
+            let mut state = State::new(1);
 
-        state.add_job(
-            1,
-            &vec![Dependency::new(DependencyType::Out, "foo".to_string())],
-        );
-        state.add_job(
-            2,
-            &vec![Dependency::new(DependencyType::InOut, "foo".to_string())],
-        );
-        state.add_job(
-            3,
-            &vec![Dependency::new(DependencyType::In, "foo".to_string())],
-        );
+            state
+                .add_job(
+                    Job::new(1, 1),
+                    &vec![Dependency::new(
+                        DependencyType::Out,
+                        scope.clone(),
+                        scheme.clone(),
+                        "foo".to_string(),
+                    )],
+                )
+                .expect("Add job failed");
+            state
+                .add_job(
+                    Job::new(2, 1),
+                    &vec![Dependency::new(
+                        DependencyType::InOut,
+                        scope.clone(),
+                        scheme.clone(),
+                        "foo".to_string(),
+                    )],
+                )
+                .expect("Add job failed");
+            state
+                .add_job(
+                    Job::new(3, 1),
+                    &vec![Dependency::new(
+                        DependencyType::In,
+                        scope.clone(),
+                        scheme.clone(),
+                        "foo".to_string(),
+                    )],
+                )
+                .expect("Add job failed");
 
-        // Submit all the things!
-        let out = state.job_event(1, "submit".to_string());
-        assert_jobs_eq(out, &vec![1]);
-        for jobid in vec![2, 3].iter() {
-            let out = state.job_event(*jobid, "submit".to_string());
-            assert_noop(out);
-        }
-
-        for jobid in vec![1, 2, 3].iter() {
-            let out = state.job_event(*jobid, "depend".to_string());
-            assert_noop(out);
-            let out = state.job_event(*jobid, "alloc".to_string());
-            assert_noop(out);
-            let out = state.job_event(*jobid, "finish".to_string());
-            if *jobid < 3 {
-                assert_jobs_eq(out, &vec![jobid + 1]);
-            } else {
+            // Submit all the things!
+            let out = state.job_event(1, "submit".to_string());
+            assert_jobs_eq(out, &vec![1]);
+            for jobid in vec![2, 3].iter() {
+                let out = state.job_event(*jobid, "submit".to_string());
                 assert_noop(out);
+            }
+
+            for jobid in vec![1, 2, 3].iter() {
+                let out = state.job_event(*jobid, "depend".to_string());
+                assert_noop(out);
+                let out = state.job_event(*jobid, "alloc".to_string());
+                assert_noop(out);
+                let out = state.job_event(*jobid, "finish".to_string());
+                if *jobid < 3 {
+                    assert_jobs_eq(out, &vec![jobid + 1]);
+                } else {
+                    assert_noop(out);
+                }
             }
         }
     }
 
     #[test]
     fn job_fan_out() {
-        let mut state = State::new();
-        state.add_job(
-            1,
-            &vec![Dependency::new(DependencyType::Out, "foo".to_string())],
-        );
+        let mut state = State::new(1);
+        state
+            .add_job(
+                Job::new(1, 1),
+                &vec![Dependency::new_global_string(
+                    DependencyType::Out,
+                    "foo".to_string(),
+                )],
+            )
+            .expect("Add job failed");
         for jobid in vec![2, 3, 4].iter() {
-            state.add_job(
-                *jobid,
-                &vec![
-                    Dependency::new(DependencyType::In, "foo".to_string()),
-                    Dependency::new(DependencyType::Out, "bar".to_string()),
-                ],
-            );
+            state
+                .add_job(
+                    Job::new(*jobid, 1),
+                    &vec![
+                        Dependency::new_global_string(DependencyType::In, "foo".to_string()),
+                        Dependency::new_global_string(DependencyType::Out, "bar".to_string()),
+                    ],
+                )
+                .expect("Add job failed");
         }
-        state.add_job(
-            5,
-            &vec![Dependency::new(DependencyType::In, "bar".to_string())],
-        );
+        state
+            .add_job(
+                Job::new(5, 1),
+                &vec![Dependency::new_global_string(
+                    DependencyType::In,
+                    "bar".to_string(),
+                )],
+            )
+            .expect("Add job failed");
 
         // Submit all the things!
         let out = state.job_event(1, "submit".to_string());
@@ -329,11 +411,16 @@ mod tests {
     fn nonexistent_in() {
         //! A job with an 'in' dependency that does not match an 'out' of a
         //! currently queued/running job can be immediately scheduled.
-        let mut state = State::new();
-        state.add_job(
-            1,
-            &vec![Dependency::new(DependencyType::In, "foo".to_string())],
-        );
+        let mut state = State::new(1);
+        state
+            .add_job(
+                Job::new(1, 1),
+                &vec![Dependency::new_global_string(
+                    DependencyType::In,
+                    "foo".to_string(),
+                )],
+            )
+            .expect("Add job failed");
         let out = state.job_event(1, "submit".to_string());
         assert_jobs_eq(out, &vec![1]);
     }
@@ -341,23 +428,43 @@ mod tests {
     #[test]
     fn invalid_jobid() {
         //! Test that an event on an unknown/invalid returns an error
-        let mut state = State::new();
+        let mut state = State::new(1);
         let out = state.job_event(1, "submit".to_string());
         assert_err_eq(out, StateError::InvalidJobID);
-        state.add_job(
-            1,
-            &vec![Dependency::new(DependencyType::In, "foo".to_string())],
-        );
+        state
+            .add_job(
+                Job::new(1, 1),
+                &vec![Dependency::new_global_string(
+                    DependencyType::In,
+                    "foo".to_string(),
+                )],
+            )
+            .expect("Add job failed");
         let out = state.job_event(1, "foobar".to_string());
         assert_err_eq(out, StateError::InvalidEvent);
     }
 
     #[test]
     fn empty_dependencies() {
-        //! Test that a job without and dependencies works
-        let mut state = State::new();
-        state.add_job(1, &vec![]);
+        //! Test that a job without any dependencies works
+        let mut state = State::new(1);
+        state
+            .add_job(Job::new(1, 1), &vec![])
+            .expect("Add job failed");
         let out = state.job_event(1, "submit".to_string());
         assert_jobs_eq(out, &vec![1]);
+    }
+
+    #[test]
+    fn invalid_global_out_dep() {
+        let mut state = State::new(1);
+        let out = state.add_job(
+            Job::new(1, 2),
+            &vec![Dependency::new_global_string(
+                DependencyType::Out,
+                "foo".to_string(),
+            )],
+        );
+        assert_err_eq(out, StateError::InvalidPermission);
     }
 }
