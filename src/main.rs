@@ -3,8 +3,8 @@ use std::iter::FromIterator;
 
 struct Job {
     jobid: i64,
-    ancestors: HashSet<i64>, // jobs this job depends on
-    children: HashSet<i64>,  // jobs that depend on this job
+    ancestors: HashSet<i64>,   // jobs this job depends on
+    descendants: HashSet<i64>, // jobs that depend on this job
 }
 
 impl Job {
@@ -12,7 +12,7 @@ impl Job {
         Self {
             jobid: jobid,
             ancestors: HashSet::new(),
-            children: HashSet::new(),
+            descendants: HashSet::new(),
         }
     }
 }
@@ -20,7 +20,7 @@ impl Job {
 #[derive(Debug,PartialEq)]
 enum StateError {
     InvalidJobID,
-    MissingDescendent,
+    MissingDescendant,
     InvalidEvent,
 }
 
@@ -47,10 +47,10 @@ impl State {
     ) -> Result<(), StateError> {
         /*! Look for previously submitted jobs whose `out` symbol matches the
          * `in` symbol of the provided job.  For each matching job: add the new
-         * job as a child of the previously submitted job and add the previously
-         * submitted job as an ancestor of the new job.  If no matches are
-         * found, do nothing (i.e., the job should be free to be scheduled
-         * immediately)
+         * job as a descendants of the previously submitted job and add the
+         * previously submitted job as an ancestor of the new job.  If no
+         * matches are found, do nothing (i.e., the job should be free to be
+         * scheduled immediately)
          */
         match self.jobs_with_out_symbol.get(symbol) {
             Some(out_jobs) => {
@@ -62,7 +62,7 @@ impl State {
                         }
                     };
                     in_job.ancestors.insert(out_job.jobid);
-                    out_job.children.insert(in_job.jobid);
+                    out_job.descendants.insert(in_job.jobid);
                 }
                 Ok(())
             }
@@ -140,21 +140,21 @@ impl State {
             "alloc" => {},
             "finish" => {
                 let mut error_occurred : bool = false;
-                let error : StateError = StateError::MissingDescendent;
-                for child_id in job.children.clone().iter() {
-                    let child_job = match self.jobs.get_mut(child_id) {
+                let error: StateError = StateError::MissingDescendant;
+                for descendant_id in job.descendants.clone().iter() {
+                    let descendant_job = match self.jobs.get_mut(descendant_id) {
                         Some(x) => x,
                         None => {
-                            eprintln!("Child Job ID ({}) not found", child_id);
+                            eprintln!("Descendant Job ID ({}) not found", descendant_id);
                             error_occurred = true;
                             continue;
                         },
                     };
-                    if !child_job.ancestors.remove(&jobid) {
-                        eprintln!("WARN: Job ID not found in child's ancestors");
+                    if !descendant_job.ancestors.remove(&jobid) {
+                        eprintln!("WARN: Job ID not found in descendant's ancestor list");
                     }
-                    if child_job.ancestors.len() == 0 {
-                        ret.insert(child_job.jobid);
+                    if descendant_job.ancestors.len() == 0 {
+                        ret.insert(descendant_job.jobid);
                     }
                 }
                 if error_occurred {
