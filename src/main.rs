@@ -17,7 +17,7 @@ impl Job {
     }
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug, PartialEq)]
 enum StateError {
     InvalidJobID,
     MissingDescendant,
@@ -57,9 +57,7 @@ impl State {
                 for out_jobid in out_jobs.iter() {
                     let out_job: &mut Job = match self.jobs.get_mut(out_jobid) {
                         Some(x) => x,
-                        None => {
-                            return Err(StateError::InvalidJobID)
-                        }
+                        None => return Err(StateError::InvalidJobID),
                     };
                     in_job.ancestors.insert(out_job.jobid);
                     out_job.descendants.insert(in_job.jobid);
@@ -136,10 +134,10 @@ impl State {
                     ret.insert(jobid);
                 }
             }
-            "depend" => {},
-            "alloc" => {},
+            "depend" => {}
+            "alloc" => {}
             "finish" => {
-                let mut error_occurred : bool = false;
+                let mut error_occurred: bool = false;
                 let error: StateError = StateError::MissingDescendant;
                 for descendant_id in job.descendants.clone().iter() {
                     let descendant_job = match self.jobs.get_mut(descendant_id) {
@@ -148,7 +146,7 @@ impl State {
                             eprintln!("Descendant Job ID ({}) not found", descendant_id);
                             error_occurred = true;
                             continue;
-                        },
+                        }
                     };
                     if !descendant_job.ancestors.remove(&jobid) {
                         eprintln!("WARN: Job ID not found in descendant's ancestor list");
@@ -161,7 +159,7 @@ impl State {
                     return Err(error);
                 }
             }
-            _ => {return Err(StateError::InvalidEvent)}
+            _ => return Err(StateError::InvalidEvent),
         }
         Ok(ret)
     }
@@ -225,10 +223,7 @@ mod tests {
     fn assert_err_eq(actual: Result<HashSet<i64>, StateError>, expected: StateError) {
         // replace with `contains_err` once it is stable
         assert!(actual.is_err());
-        assert_eq!(
-            actual.unwrap_err(),
-            expected,
-        );
+        assert_eq!(actual.unwrap_err(), expected,);
     }
 
     #[test]
@@ -361,10 +356,7 @@ mod tests {
     fn empty_dependencies() {
         //! Test that a job without and dependencies works
         let mut state = State::new();
-        state.add_job(
-            1,
-            &vec![],
-        );
+        state.add_job(1, &vec![]);
         let out = state.job_event(1, "submit".to_string());
         assert_jobs_eq(out, &vec![1]);
     }
