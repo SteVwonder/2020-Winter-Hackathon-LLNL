@@ -17,6 +17,13 @@ impl Job {
     }
 }
 
+#[derive(Debug,PartialEq)]
+enum StateError {
+    InvalidJobID,
+    MissingDescendent,
+    InvalidEvent,
+}
+
 struct State {
     jobs: HashMap<i64, Job>,
     /// Out symbol lookup table used when a new job with an `in` dependency is
@@ -51,7 +58,7 @@ impl State {
                     let out_job: &mut Job = match self.jobs.get_mut(out_jobid) {
                         Some(x) => x,
                         None => {
-                            return Err("Matching out jobid found in symbol map but not job map")
+                            return Err(StateError::InvalidJobID)
                         }
                     };
                     in_job.ancestors.insert(out_job.jobid);
@@ -93,21 +100,21 @@ impl State {
 
         for dependency in dependencies.iter() {
             let result = match dependency.dep_type {
-                DependencyType::In => self.add_in_dependency(&mut job, &dependency.label),
+                DependencyType::In => self.add_in_dependency(&mut job, &dependency.value),
                 DependencyType::Out => {
-                    self.add_out_dependency(&mut job, &dependency.label);
+                    self.add_out_dependency(&mut job, &dependency.value);
                     Ok(())
                 }
                 DependencyType::InOut => {
-                    let ret = self.add_in_dependency(&mut job, &dependency.label);
-                    self.add_out_dependency(&mut job, &dependency.label);
+                    let ret = self.add_in_dependency(&mut job, &dependency.value);
+                    self.add_out_dependency(&mut job, &dependency.value);
                     ret
                 }
             };
             match result {
                 Ok(()) => (),
-                Err(msg) => {
-                    eprintln!("Failed to add dependency for job: {}", msg);
+                Err(e) => {
+                    eprintln!("Failed to add dependency for job: {:?}", e);
                     self.rollback_job_add(&job);
                 }
             }
@@ -116,7 +123,7 @@ impl State {
         self.jobs.insert(jobid, job);
     }
 
-    pub fn job_event(&mut self, jobid: i64, event: String) -> Result<HashSet<i64>, &'static str> {
+    pub fn job_event(&mut self, jobid: i64, event: String) -> Result<HashSet<i64>, StateError> {
         /*! Given a specific job and it's event, calculate the effects of this
          * event on other jobs.  Specifically, calculate which jobs are now
          * free to run. For example, if a job completes, determine which jobs
@@ -124,7 +131,7 @@ impl State {
          */
         let job = match self.jobs.get(&jobid) {
             Some(x) => x,
-            None => return Err("Job ID in event not found"),
+            None => return Err(StateError::InvalidJobID),
         };
         let mut ret = HashSet::new();
         match event.as_str() {
@@ -133,20 +140,32 @@ impl State {
                     ret.insert(jobid);
                 }
             }
+            "depend" => {},
+            "alloc" => {},
             "finish" => {
+                let mut error_occurred : bool = false;
+                let error : StateError = StateError::MissingDescendent;
                 for child_id in job.children.clone().iter() {
                     let child_job = match self.jobs.get_mut(child_id) {
                         Some(x) => x,
-                        None => return Err("Child Job ID not found"),
+                        None => {
+                            eprintln!("Child Job ID ({}) not found", child_id);
+                            error_occurred = true;
+                            continue;
+                        },
                     };
                     if !child_job.ancestors.remove(&jobid) {
-                        eprintln!("Job ID not found in child's ancestors");
-                    } else if child_job.ancestors.len() == 0 {
+                        eprintln!("WARN: Job ID not found in child's ancestors");
+                    }
+                    if child_job.ancestors.len() == 0 {
                         ret.insert(child_job.jobid);
                     }
                 }
+                if error_occurred {
+                    return Err(error);
+                }
             }
-            _ => {}
+            _ => {return Err(StateError::InvalidEvent)}
         }
         Ok(ret)
     }
@@ -158,16 +177,30 @@ enum DependencyType {
     InOut,
 }
 
+enum DependencyScope {
+    User,
+    Global,
+}
+
+enum DependencyScheme {
+    String,
+    Fluid,
+}
+
 struct Dependency {
     dep_type: DependencyType,
-    label: String,
+    scope: DependencyScope,
+    scheme: DependencyScheme,
+    value: String,
 }
 
 impl Dependency {
-    pub fn new(dep_type: DependencyType, label: String) -> Self {
+    pub fn new(dep_type: DependencyType, value: String) -> Self {
         Self {
             dep_type: dep_type,
-            label: label,
+            scope: DependencyScope::Global,
+            scheme: DependencyScheme::String,
+            value: value,
         }
     }
 }
@@ -180,16 +213,25 @@ fn main() {
 mod tests {
     use super::*;
 
-    fn assert_noop(actual: Result<HashSet<i64>, &'static str>) {
+    fn assert_noop(actual: Result<HashSet<i64>, StateError>) {
         assert!(actual.is_ok());
         assert_eq!(actual.unwrap().len(), 0)
     }
 
-    fn assert_jobs_eq(actual: Result<HashSet<i64>, &'static str>, expected: &Vec<i64>) {
+    fn assert_jobs_eq(actual: Result<HashSet<i64>, StateError>, expected: &Vec<i64>) {
         assert!(actual.is_ok());
         assert_eq!(
             actual.unwrap(),
             HashSet::from_iter(expected.iter().cloned())
+        );
+    }
+
+    fn assert_err_eq(actual: Result<HashSet<i64>, StateError>, expected: StateError) {
+        // replace with `contains_err` once it is stable
+        assert!(actual.is_err());
+        assert_eq!(
+            actual.unwrap_err(),
+            expected,
         );
     }
 
@@ -303,5 +345,19 @@ mod tests {
         );
         let out = state.job_event(1, "submit".to_string());
         assert_jobs_eq(out, &vec![1]);
+    }
+
+    #[test]
+    fn invalid_jobid() {
+        //! Test that an event on an unknown/invalid returns an error
+        let mut state = State::new();
+        let out = state.job_event(1, "submit".to_string());
+        assert_err_eq(out, StateError::InvalidJobID);
+        state.add_job(
+            1,
+            &vec![Dependency::new(DependencyType::In, "foo".to_string())],
+        );
+        let out = state.job_event(1, "foobar".to_string());
+        assert_err_eq(out, StateError::InvalidEvent);
     }
 }
