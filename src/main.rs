@@ -92,10 +92,6 @@ impl State {
          * dependencies are broken down into an `In` insertion followed by an
          * an `Out` insertion.
          */
-        if dependencies.len() == 0 {
-            return;
-        }
-
         let mut job = Job::new(jobid);
 
         for dependency in dependencies.iter() {
@@ -359,5 +355,17 @@ mod tests {
         );
         let out = state.job_event(1, "foobar".to_string());
         assert_err_eq(out, StateError::InvalidEvent);
+    }
+
+    #[test]
+    fn empty_dependencies() {
+        //! Test that a job without and dependencies works
+        let mut state = State::new();
+        state.add_job(
+            1,
+            &vec![],
+        );
+        let out = state.job_event(1, "submit".to_string());
+        assert_jobs_eq(out, &vec![1]);
     }
 }
