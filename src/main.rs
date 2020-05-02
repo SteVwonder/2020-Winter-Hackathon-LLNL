@@ -467,4 +467,101 @@ mod tests {
         );
         assert_err_eq(out, StateError::InvalidPermission);
     }
+
+    #[test]
+    fn test_user_global_separation() {
+        let mut state = State::new(1);
+        state
+            .add_job(
+                Job::new(1, 1),
+                &vec![Dependency::new(
+                    DependencyType::Out,
+                    DependencyScope::Global,
+                    DependencyScheme::String,
+                    "foo".to_string(),
+                )],
+            )
+            .expect("Add job failed");
+        state
+            .add_job(
+                Job::new(2, 2),
+                &vec![Dependency::new(
+                    DependencyType::In,
+                    DependencyScope::User,
+                    DependencyScheme::String,
+                    "foo".to_string(),
+                )],
+            )
+            .expect("Add job failed");
+        // Both jobs should be able to run right away.  The user In dependency
+        // should NOT match with the global Out dependency
+        for jobid in vec![1, 2].iter() {
+            let out = state.job_event(*jobid, "submit".to_string());
+            assert_jobs_eq(out, &vec![*jobid]);
+        }
+    }
+
+    #[test]
+    fn test_user_global_interleave() {
+        let mut state = State::new(1);
+        state
+            .add_job(
+                Job::new(1, 1),
+                &vec![Dependency::new(
+                    DependencyType::Out,
+                    DependencyScope::Global,
+                    DependencyScheme::String,
+                    "foo".to_string(),
+                )],
+            )
+            .expect("Add job failed");
+        state
+            .add_job(
+                Job::new(2, 2),
+                &vec![
+                    Dependency::new(
+                        DependencyType::In,
+                        DependencyScope::Global,
+                        DependencyScheme::String,
+                        "foo".to_string(),
+                    ),
+                    Dependency::new(
+                        DependencyType::Out,
+                        DependencyScope::User,
+                        DependencyScheme::String,
+                        "bar".to_string(),
+                    ),
+                ],
+            )
+            .expect("Add job failed");
+        state
+            .add_job(
+                Job::new(3, 2),
+                &vec![Dependency::new(
+                    DependencyType::In,
+                    DependencyScope::User,
+                    DependencyScheme::String,
+                    "bar".to_string(),
+                )],
+            )
+            .expect("Add job failed");
+        let out = state.job_event(1, "submit".to_string());
+        assert_jobs_eq(out, &vec![1]);
+        for jobid in vec![2, 3].iter() {
+            let out = state.job_event(*jobid, "submit".to_string());
+            assert_noop(out);
+        }
+        let out = state.job_event(1, "depend".to_string());
+        assert_noop(out);
+        let out = state.job_event(1, "alloc".to_string());
+        assert_noop(out);
+        let out = state.job_event(1, "finish".to_string());
+        assert_jobs_eq(out, &vec![2]);
+        let out = state.job_event(2, "depend".to_string());
+        assert_noop(out);
+        let out = state.job_event(2, "alloc".to_string());
+        assert_noop(out);
+        let out = state.job_event(2, "finish".to_string());
+        assert_jobs_eq(out, &vec![3]);
+    }
 }
