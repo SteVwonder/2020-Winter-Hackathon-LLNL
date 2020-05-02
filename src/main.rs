@@ -369,20 +369,16 @@ mod tests {
             .expect("Add job failed");
 
         // Submit all the things!
-        let out = state.job_event(1, "submit".to_string());
-        assert_jobs_eq(out, &vec![1]);
+        assert_jobs_eq(state.job_event(1, "submit".to_string()), &vec![1]);
         for jobid in vec![2, 3, 4, 5].iter() {
             let out = state.job_event(*jobid, "submit".to_string());
             assert_noop(out);
         }
 
         // Run and complete initial pre-process job
-        let out = state.job_event(1, "depend".to_string());
-        assert_noop(out);
-        let out = state.job_event(1, "alloc".to_string());
-        assert_noop(out);
-        let out = state.job_event(1, "finish".to_string());
-        assert_jobs_eq(out, &vec![2, 3, 4]);
+        assert_noop(state.job_event(1, "depend".to_string()));
+        assert_noop(state.job_event(1, "alloc".to_string()));
+        assert_jobs_eq(state.job_event(1, "finish".to_string()), &vec![2, 3, 4]);
 
         // Run and complete fan-out
         for jobid in vec![2, 3, 4].iter() {
@@ -399,12 +395,9 @@ mod tests {
         }
 
         // Run and complete postprocess job
-        let out = state.job_event(5, "depend".to_string());
-        assert_noop(out);
-        let out = state.job_event(5, "alloc".to_string());
-        assert_noop(out);
-        let out = state.job_event(5, "finish".to_string());
-        assert_noop(out);
+        assert_noop(state.job_event(5, "depend".to_string()));
+        assert_noop(state.job_event(5, "alloc".to_string()));
+        assert_noop(state.job_event(5, "finish".to_string()));
     }
 
     #[test]
@@ -421,8 +414,7 @@ mod tests {
                 )],
             )
             .expect("Add job failed");
-        let out = state.job_event(1, "submit".to_string());
-        assert_jobs_eq(out, &vec![1]);
+        assert_jobs_eq(state.job_event(1, "submit".to_string()), &vec![1]);
     }
 
     #[test]
@@ -451,8 +443,7 @@ mod tests {
         state
             .add_job(Job::new(1, 1), &vec![])
             .expect("Add job failed");
-        let out = state.job_event(1, "submit".to_string());
-        assert_jobs_eq(out, &vec![1]);
+        assert_jobs_eq(state.job_event(1, "submit".to_string()), &vec![1]);
     }
 
     #[test]
@@ -545,23 +536,16 @@ mod tests {
                 )],
             )
             .expect("Add job failed");
-        let out = state.job_event(1, "submit".to_string());
-        assert_jobs_eq(out, &vec![1]);
+        assert_jobs_eq(state.job_event(1, "submit".to_string()), &vec![1]);
         for jobid in vec![2, 3].iter() {
             let out = state.job_event(*jobid, "submit".to_string());
             assert_noop(out);
         }
-        let out = state.job_event(1, "depend".to_string());
-        assert_noop(out);
-        let out = state.job_event(1, "alloc".to_string());
-        assert_noop(out);
-        let out = state.job_event(1, "finish".to_string());
-        assert_jobs_eq(out, &vec![2]);
-        let out = state.job_event(2, "depend".to_string());
-        assert_noop(out);
-        let out = state.job_event(2, "alloc".to_string());
-        assert_noop(out);
-        let out = state.job_event(2, "finish".to_string());
-        assert_jobs_eq(out, &vec![3]);
+        assert_noop(state.job_event(1, "depend".to_string()));
+        assert_noop(state.job_event(1, "alloc".to_string()));
+        assert_jobs_eq(state.job_event(1, "finish".to_string()), &vec![2]);
+        assert_noop(state.job_event(2, "depend".to_string()));
+        assert_noop(state.job_event(2, "alloc".to_string()));
+        assert_jobs_eq(state.job_event(2, "finish".to_string()), &vec![3]);
     }
 }
