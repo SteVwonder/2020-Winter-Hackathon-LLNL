@@ -22,6 +22,7 @@ impl Job {
 #[derive(Debug, PartialEq)]
 enum StateError {
     InvalidJobID,
+    DuplicateJobID,
     MissingDescendant,
     InvalidEvent,
     InvalidPermission,
@@ -119,6 +120,10 @@ impl State {
          * dependencies are broken down into an `In` insertion followed by an
          * an `Out` insertion.
          */
+        if self.jobs.contains_key(&job.jobid) {
+            return Err(StateError::DuplicateJobID)
+        }
+
         for dependency in dependencies.iter() {
             let result = match dependency.dep_type {
                 DependencyType::In => self.add_in_dependency(&mut job, &dependency),
@@ -547,5 +552,45 @@ mod tests {
         assert_noop(state.job_event(2, "depend".to_string()));
         assert_noop(state.job_event(2, "alloc".to_string()));
         assert_jobs_eq(state.job_event(2, "finish".to_string()), &vec![3]);
+    }
+
+    #[test]
+    fn test_duplicate_id() {
+        let mut state = State::new(1);
+        state
+            .add_job(
+                Job::new(1, 1),
+                &vec![Dependency::new(
+                    DependencyType::Out,
+                    DependencyScope::Global,
+                    DependencyScheme::String,
+                    "foo".to_string(),
+                )],
+            )
+            .expect("Add job failed");
+        assert_err_eq(
+            state.add_job(
+                Job::new(1, 1),
+                &vec![Dependency::new(
+                    DependencyType::Out,
+                    DependencyScope::Global,
+                    DependencyScheme::String,
+                    "foo".to_string(),
+                )],
+            ),
+            StateError::DuplicateJobID,
+        );
+        assert_err_eq(
+            state.add_job(
+                Job::new(1, 2),
+                &vec![Dependency::new(
+                    DependencyType::Out,
+                    DependencyScope::Global,
+                    DependencyScheme::String,
+                    "foo".to_string(),
+                )],
+            ),
+            StateError::DuplicateJobID,
+        );
     }
 }
